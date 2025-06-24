@@ -16,6 +16,11 @@ type Client struct {
 	closeOnce sync.Once  //used to avoiding closing channel multiple times
 }
 
+var (
+	pongWait     = time.Second * 10
+	pingInterval = (pongWait * 9) / 10
+)
+
 func NewClient(conn *websocket.Conn, manager *Manager) *Client {
 	return &Client{
 		conn:    conn,
@@ -26,6 +31,11 @@ func NewClient(conn *websocket.Conn, manager *Manager) *Client {
 }
 func (c *Client) readMessage() {
 	defer c.closeClient()
+	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		c.manager.log.Errorln("Error in setReadDeadline", err)
+		return
+	}
+	c.conn.SetPongHandler(c.pongHandler)
 	for {
 		msgType, payload, err := c.conn.ReadMessage()
 		if err != nil {
@@ -41,11 +51,11 @@ func (c *Client) readMessage() {
 		// go func() {
 		// 	c.conn.WriteMessage(websocket.TextMessage, []byte("concurrent write!"))
 		// }() //-> causes concurrent write problem
-		// go c.broadcastMessage(payload)
 		var req Event
 		if err := json.Unmarshal(payload, &req); err != nil {
 			c.manager.log.Desugar().Error("Error while unmarshing the json data")
 		}
+		go c.broadcastMessage(req)
 
 		if err := c.manager.routeEvent(req, c); err != nil {
 			c.manager.log.Errorln("Error while routing the events", err)
@@ -59,45 +69,59 @@ func (c *Client) readMessage() {
 
 func (c *Client) writeMessage() {
 	defer c.closeClient()
-	for msg := range c.egress {
-		c.manager.log.Infoln("Actual Event", msg)
-		data, err := json.Marshal(msg)
-		if err != nil {
-			c.manager.log.Errorln("Error while marshing the data", err)
-		}
+	ticker := time.NewTicker(pingInterval)
+	for {
+		select {
+		case msg, ok := <-c.egress:
+			if !ok {
+				if err := c.conn.WriteMessage(websocket.CloseMessage, nil); err != nil {
+					c.manager.log.Errorln("Error while sending close message to client", err)
+				}
+			}
+			c.manager.log.Infoln("Actual Event", msg)
+			data, err := json.Marshal(msg)
+			if err != nil {
+				c.manager.log.Errorln("Error while marshing the data", err)
+			}
 
-		if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			c.manager.log.Errorw("error while writing msg to client", err)
-			return // Exit on write error
+			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				c.manager.log.Errorw("error while writing msg to client", err)
+				return // Exit on write error
+			}
+		case <-ticker.C:
+			c.manager.log.Infoln("Pinging the client")
+			if err := c.conn.WriteMessage(websocket.PingMessage, []byte("")); err != nil {
+				c.manager.log.Errorln("error while sending Ping Message", err)
+				return
+			}
 		}
-		c.manager.log.Infoln("Message sent")
 	}
 
 }
 
-// func (c *Client) broadcastMessage(payload []byte) {
-// 	c.manager.rw.Lock()
-// 	clients := make([]*Client, 0, len(c.manager.clients))
-// 	for client := range c.manager.clients {
-// 		if client == c {
-// 			c.manager.log.Infoln("Skipping Current Client", c.conn.RemoteAddr())
-// 			continue
-// 		}
-// 		clients = append(clients, client)
-// 	}
-// 	c.manager.rw.Unlock()
-// 	finalPayload := string(payload) + " from server"
-// 	c.manager.log.Info("total client to be brodcasted ", len(clients))
-// 	for _, client := range clients {
-// 		select {
-// 		case client.egress <- []byte(finalPayload):
-// 			c.manager.log.Infoln("Message added to engress")
-// 		default:
-// 			c.manager.log.Warnln("Client is slow and egress is full for client", client.conn.RemoteAddr())
-// 		}
-// 	}
+func (c *Client) broadcastMessage(payload Event) {
+	c.manager.rw.Lock()
+	clients := make([]*Client, 0, len(c.manager.clients))
+	for client := range c.manager.clients {
+		if client == c {
+			c.manager.log.Infoln("Skipping Current Client", c.conn.RemoteAddr())
+			continue
+		}
+		clients = append(clients, client)
+	}
+	c.manager.rw.Unlock()
 
-// }
+	c.manager.log.Info("total client to be brodcasted ", len(clients))
+	for _, client := range clients {
+		select {
+		case client.egress <- payload:
+			c.manager.log.Infoln("Message added to engress")
+		default:
+			c.manager.log.Warnln("Client is slow and egress is full for client", client.conn.RemoteAddr())
+		}
+	}
+
+}
 func (c *Client) closeClient() {
 	c.closeOnce.Do(func() {
 		c.conn.SetWriteDeadline(time.Now().Add(time.Second))
@@ -113,4 +137,9 @@ func (c *Client) closeClient() {
 		c.manager.log.Infoln("total clients are", len(c.manager.clients))
 	})
 
+}
+func (c *Client) pongHandler(pongMsg string) error {
+	// Current time + Pong Wait time
+	c.manager.log.Infoln("pong", pongMsg)
+	return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 }

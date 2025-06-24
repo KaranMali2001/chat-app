@@ -46,7 +46,7 @@ func (m *Manager) setUpEventHandlers() {
 func SendMessage(event Event, c *Client) error {
 	event.Payload.Content = "SEVER :" + event.Payload.Content
 	event.Payload.Sender = "SERVER"
-	time.Sleep(time.Minute)
+
 	event.Payload.Time = time.Now().Format("03:04 PM")
 	c.egress <- event
 	return nil
