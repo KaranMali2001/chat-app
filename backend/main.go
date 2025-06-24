@@ -5,14 +5,17 @@ import (
 
 	"github.com/chat-app/logger"
 	"github.com/chat-app/routes"
-
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
 func main() {
 
 	logger := setUpLogger()
-
+	err := godotenv.Load()
+	if err != nil {
+		logger.Errorw("Error loading .env file", err)
+	}
 	setUpServer(logger)
 
 }
