@@ -42,6 +42,8 @@ func NewManager(logger *zap.SugaredLogger) *Manager {
 }
 func (m *Manager) setUpEventHandlers() {
 	m.handlers[EventSendMessage] = SendMessage
+	m.handlers[BROADCAST] = m.broadcastMessage
+
 }
 func SendMessage(event Event, c *Client) error {
 	event.Payload.Content = "SEVER :" + event.Payload.Content
@@ -66,33 +68,55 @@ func (m *Manager) routeEvent(event Event, c *Client) error {
 }
 
 func (m *Manager) ServeWs(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	m.log.Infoln("body", username)
 
 	conn, err := webSocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		m.log.Errorw("error while upgrading the websocket", err)
 	}
-	client := NewClient(conn, m)
+	client := NewClient(conn, m, username)
 	m.addClient(client)
 	m.log.Infoln("New client connected ")
 	m.log.Infoln("total clients are", len(m.clients))
 	go client.readMessage()
+	go func() {
 
-	go client.writeMessage()
+		defer func() {
+			if r := recover(); r != nil {
+				m.log.Errorln("Error while recovering the write message go routine", r)
+			}
+		}()
+		client.writeMessage()
+	}()
 
+}
+func (m *Manager) broadcastMessage(event Event, client *Client) error {
+	m.rw.Lock()
+	clients := make([]*Client, 0, len(m.clients))
+	for c := range m.clients {
+		if c == client {
+			m.log.Infoln("skipping the Sender Client")
+			continue
+		}
+		clients = append(clients, c)
+	}
+	m.rw.Unlock()
+	for _, c := range clients {
+		select {
+		case c.egress <- event:
+
+			m.log.Infoln("Send Payload to client egress", c.username)
+		default:
+			m.log.Infoln("Client Egrees channel is full")
+		}
+	}
+	return nil
 }
 func (m *Manager) addClient(c *Client) error {
 	m.rw.Lock()
 	defer m.rw.Unlock()
 	//will be addding more logic to add client to db or redis not just in memory object
 	m.clients[c] = true
-	return nil
-}
-func (m *Manager) removeClient(c *Client) error {
-	m.rw.Lock()
-	defer m.rw.Unlock()
-	if _, ok := m.clients[c]; ok {
-		c.conn.Close()
-		delete(m.clients, c)
-	}
 	return nil
 }

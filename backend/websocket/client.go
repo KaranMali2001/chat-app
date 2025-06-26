@@ -10,6 +10,7 @@ import (
 
 type ClientList map[*Client]bool
 type Client struct {
+	username  string
 	conn      *websocket.Conn
 	manager   *Manager
 	egress    chan Event // used to avoid concurrency issue
@@ -21,11 +22,12 @@ var (
 	pingInterval = (pongWait * 9) / 10
 )
 
-func NewClient(conn *websocket.Conn, manager *Manager) *Client {
+func NewClient(conn *websocket.Conn, manager *Manager, username string) *Client {
 	return &Client{
-		conn:    conn,
-		manager: manager,
-		egress:  make(chan Event),
+		conn:     conn,
+		manager:  manager,
+		egress:   make(chan Event),
+		username: username,
 	}
 
 }
@@ -55,7 +57,6 @@ func (c *Client) readMessage() {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			c.manager.log.Desugar().Error("Error while unmarshing the json data")
 		}
-		go c.broadcastMessage(req)
 
 		if err := c.manager.routeEvent(req, c); err != nil {
 			c.manager.log.Errorln("Error while routing the events", err)
@@ -68,6 +69,7 @@ func (c *Client) readMessage() {
 }
 
 func (c *Client) writeMessage() {
+	c.manager.log.Infoln("inside Write message")
 	defer c.closeClient()
 	ticker := time.NewTicker(pingInterval)
 	for {
@@ -99,29 +101,6 @@ func (c *Client) writeMessage() {
 
 }
 
-func (c *Client) broadcastMessage(payload Event) {
-	c.manager.rw.Lock()
-	clients := make([]*Client, 0, len(c.manager.clients))
-	for client := range c.manager.clients {
-		if client == c {
-			c.manager.log.Infoln("Skipping Current Client", c.conn.RemoteAddr())
-			continue
-		}
-		clients = append(clients, client)
-	}
-	c.manager.rw.Unlock()
-
-	c.manager.log.Info("total client to be brodcasted ", len(clients))
-	for _, client := range clients {
-		select {
-		case client.egress <- payload:
-			c.manager.log.Infoln("Message added to engress")
-		default:
-			c.manager.log.Warnln("Client is slow and egress is full for client", client.conn.RemoteAddr())
-		}
-	}
-
-}
 func (c *Client) closeClient() {
 	c.closeOnce.Do(func() {
 		c.conn.SetWriteDeadline(time.Now().Add(time.Second))
@@ -132,7 +111,8 @@ func (c *Client) closeClient() {
 		if err != nil {
 			c.manager.log.Errorw("error while closing the connection still removing from manager", err)
 		}
-		c.manager.removeClient(c)
+
+		delete(c.manager.clients, c)
 		c.manager.log.Infoln("client removed", c.conn.RemoteAddr())
 		c.manager.log.Infoln("total clients are", len(c.manager.clients))
 	})

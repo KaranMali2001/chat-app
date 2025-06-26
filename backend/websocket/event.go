@@ -14,4 +14,6 @@ type EventHandler func(event Event, c *Client) error
 
 const (
 	EventSendMessage = "SEND_MESSAGE"
+	JoinWithUserName = "JOIN_WITH_USERNAME"
+	BROADCAST        = "BROADCAST"
 )
