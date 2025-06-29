@@ -3,7 +3,7 @@ package websocket
 import (
 	"errors"
 	"net/http"
-	"os"
+
 	"sync"
 	"time"
 
@@ -17,9 +17,7 @@ var (
 		WriteBufferSize:   1024,
 		EnableCompression: true,
 		CheckOrigin: func(r *http.Request) bool {
-			origin := r.Header.Get("origin")
-
-			return origin == os.Getenv("ALLOWED_ORIGINS")
+			return true
 		},
 	}
 )
@@ -101,6 +99,11 @@ func (m *Manager) broadcastMessage(event Event, client *Client) error {
 		}
 		clients = append(clients, c)
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			m.log.Errorln("Error while recovering the go routine", r)
+		}
+	}()
 	m.rw.Unlock()
 	for _, c := range clients {
 		select {

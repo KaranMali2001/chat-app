@@ -26,7 +26,7 @@ func NewClient(conn *websocket.Conn, manager *Manager, username string) *Client 
 	return &Client{
 		conn:     conn,
 		manager:  manager,
-		egress:   make(chan Event),
+		egress:   make(chan Event, 256),
 		username: username,
 	}
 
@@ -70,17 +70,19 @@ func (c *Client) readMessage() {
 
 func (c *Client) writeMessage() {
 	c.manager.log.Infoln("inside Write message")
-	defer c.closeClient()
+	// defer c.closeClient()
 	ticker := time.NewTicker(pingInterval)
 	for {
 		select {
 		case msg, ok := <-c.egress:
 			if !ok {
-				if err := c.conn.WriteMessage(websocket.CloseMessage, nil); err != nil {
-					c.manager.log.Errorln("Error while sending close message to client", err)
-				}
+				// if err := c.conn.WriteMessage(websocket.CloseMessage, nil); err != nil {
+				// 	c.manager.log.Errorln("Error while sending close message to client", err)
+				// 	return
+				// }
+				return
 			}
-			c.manager.log.Infoln("Actual Event", msg)
+
 			data, err := json.Marshal(msg)
 			if err != nil {
 				c.manager.log.Errorln("Error while marshing the data", err)
@@ -91,7 +93,7 @@ func (c *Client) writeMessage() {
 				return // Exit on write error
 			}
 		case <-ticker.C:
-			c.manager.log.Infoln("Pinging the client")
+
 			if err := c.conn.WriteMessage(websocket.PingMessage, []byte("")); err != nil {
 				c.manager.log.Errorln("error while sending Ping Message", err)
 				return
@@ -104,15 +106,16 @@ func (c *Client) writeMessage() {
 func (c *Client) closeClient() {
 	c.closeOnce.Do(func() {
 		c.conn.SetWriteDeadline(time.Now().Add(time.Second))
-		c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+		// c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 		close(c.egress)
 		c.manager.log.Infoln("client egress channel closed")
 		err := c.conn.Close()
 		if err != nil {
 			c.manager.log.Errorw("error while closing the connection still removing from manager", err)
 		}
-
+		c.manager.rw.Lock()
 		delete(c.manager.clients, c)
+		c.manager.rw.Unlock()
 		c.manager.log.Infoln("client removed", c.conn.RemoteAddr())
 		c.manager.log.Infoln("total clients are", len(c.manager.clients))
 	})

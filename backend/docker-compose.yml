@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  chat-app:
+    ports:
+      - "8080:8080"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat-app
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 64M
