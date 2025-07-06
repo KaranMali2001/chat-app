@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 
 	"github.com/chat-app/internal/config"
+	"github.com/chat-app/internal/handler"
 	"github.com/chat-app/pkg/logger"
 	"github.com/chat-app/pkg/redis"
 	"github.com/joho/godotenv"
-	"go.uber.org/zap"
 )
 
 func main() {
@@ -20,7 +21,7 @@ func main() {
 	if err := logger.Init(isProd); err != nil {
 		panic("Failed To initize the Logger")
 	}
-	zap.L().Info("Logger Initiziled successfully")
+	logger.Infof("Logger Initiziled successfully")
 	redisConfig := config.LoadRedisConfig()
 	rds, err := redis.InitRedisCleint(redisConfig.Addr, redisConfig.Password)
 	if err != nil {
@@ -29,6 +30,16 @@ func main() {
 	if err := rds.Ping(context.Background()).Err(); err != nil {
 		panic("Not able to ping Redis")
 	}
-	zap.L().Info("Redis connection established successfully")
-
+	logger.Infof("Redis connection established successfully")
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("SERVER IS RUNNING"))
+	})
+	http.HandleFunc("/ws", handler.WebSocketUpgrader)
+	config.LoadServerConfig()
+	logger.Infof("Server started at PORT %s and server name is %s", config.AppConfig.Port, config.AppConfig.Name)
+	err = http.ListenAndServe(config.AppConfig.Port, nil)
+	if err != nil {
+		panic("HTTP SERVER DID NOT START")
+	}
 }
