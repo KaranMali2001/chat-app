@@ -3,8 +3,11 @@ package handler
 import (
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/chat-app/internal/config"
+	"github.com/chat-app/internal/hub"
+	"github.com/chat-app/internal/metrics"
 	"github.com/chat-app/pkg/logger"
 	"github.com/gorilla/websocket"
 )
@@ -12,13 +15,23 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: checkOrigin,
 }
+var chathub *hub.Hub
+
+func SetHub(h *hub.Hub) {
+	chathub = h
+}
 
 // var AllowedOrigins = config.LoadServerConfig().AllowedOrigins //this wont work because this is package level vairable and it gets initizaled before main hence godotenv() func didnt get call and hence env is not loaded
 
 func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 	username := r.URL.Query().Get("username")
+	roomId := r.URL.Query().Get("roomid")
+	if username == "" || roomId == "" {
+		http.Error(w, "Missing username or roomId", http.StatusBadRequest)
+		return
+	}
 	logger.Infof("Username is %s", username)
-
+	logger.Infof("Roomid is %s", roomId)
 	conn, err := upgrader.Upgrade(w, r, nil)
 
 	if err != nil {
@@ -27,6 +40,18 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Cant upgrade websocket connection"))
 		return
 	}
+	client := hub.NewClient(username, conn)
+	event := hub.Event{
+		Type: hub.JOIN_ROOM,
+		Payload: hub.Message{
+			RoomId: roomId,
+			Sender: username,
+			Time:   time.Now().String(),
+		},
+	}
+	chathub.ProcessEvent(event, client)
+	metrics.IncrementActiveConnections()
+	defer metrics.DecreamentActiveConnections()
 	defer conn.Close()
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -40,12 +65,12 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 		if err := conn.WriteMessage(msgType, msg); err != nil {
 			logger.Errorln("error while Writing back to client", err)
 		}
+		metrics.RecordMessageSent()
 	}
 }
 func checkOrigin(r *http.Request) bool {
 
 	origin := r.Header.Get("Origin")
-	logger.Infof("Origin %s", origin)
 
 	return origin != "" && slices.Contains(config.AppConfig.AllowedOrigins, (origin))
 }

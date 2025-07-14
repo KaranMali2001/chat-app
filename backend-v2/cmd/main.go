@@ -7,12 +7,15 @@ import (
 
 	"github.com/chat-app/internal/config"
 	"github.com/chat-app/internal/handler"
+	"github.com/chat-app/internal/hub"
 	"github.com/chat-app/internal/metrics"
 	"github.com/chat-app/pkg/logger"
 	"github.com/chat-app/pkg/redis"
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var chathub *hub.Hub
 
 func main() {
 	err := godotenv.Load()
@@ -40,8 +43,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("SERVER IS RUNNING"))
 	})))
-
+	chathub = hub.NewHub()
+	handler.SetHub(chathub)
 	http.HandleFunc("/ws", handler.WebSocketUpgrader)
+	http.HandleFunc("/create-room", handler.CreateRoom)
 	config.LoadServerConfig()
 	logger.Infof("Server started at PORT %s and server name is %s", config.AppConfig.Port, config.AppConfig.Name)
 	err = http.ListenAndServe(config.AppConfig.Port, nil)
