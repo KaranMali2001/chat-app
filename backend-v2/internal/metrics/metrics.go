@@ -58,10 +58,6 @@ func Init() {
 				MessageLatency,
 				wsDeliverylatency,
 				httpDuration,
-				// collectors.NewGoCollector(),
-				// collectors.NewProcessCollector(
-				// 	collectors.ProcessCollectorOpts{},
-				// ),
 			)
 		})
 }

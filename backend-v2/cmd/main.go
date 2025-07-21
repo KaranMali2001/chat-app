@@ -1,55 +1,35 @@
 package main
 
 import (
-	"context"
 	"net/http"
-	"os"
 
 	"github.com/chat-app/internal/config"
 	"github.com/chat-app/internal/handler"
 	"github.com/chat-app/internal/hub"
-	"github.com/chat-app/internal/metrics"
+
 	"github.com/chat-app/pkg/logger"
-	"github.com/chat-app/pkg/redis"
-	"github.com/joho/godotenv"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var chathub *hub.Hub
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		panic("ENV NOT LOADED")
-	}
-	isProd := os.Getenv("APP_ENV") == "production"
-	if err := logger.Init(isProd); err != nil {
-		panic("Failed To initize the Logger")
-	}
-	logger.Infof("Logger Initiziled successfully")
-	redisConfig := config.LoadRedisConfig()
-	rds, err := redis.InitRedisCleint(redisConfig.Addr, redisConfig.Password)
-	if err != nil {
-		panic("Redis is not iniizlted")
-	}
-	if err := rds.Ping(context.Background()).Err(); err != nil {
-		panic("Not able to ping Redis")
-	}
-	logger.Infof("Redis connection established successfully")
-	metrics.Init()
-	logger.Infof("Metrics initizalied successfully")
+	loadEnv()
+	initLogger()
+
+	initConfig()
+	initMetrics()
+	rds := initRedis()
+	initHub(rds)
 	http.Handle("/metrics", promhttp.Handler())
-	http.Handle("/health", metrics.InstrumentHTTP("/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("SERVER IS RUNNING"))
-	})))
-	chathub = hub.NewHub()
-	handler.SetHub(chathub)
+	http.Handle("/health", handler.HealthHandler)
 	http.HandleFunc("/ws", handler.WebSocketUpgrader)
-	http.HandleFunc("/create-room", handler.CreateRoom)
-	config.LoadServerConfig()
+	http.HandleFunc("/api/v1/create-room", handler.CreateRoom)
+	http.HandleFunc("/api/v1/room-stats", handler.GetRoomStats)
+
 	logger.Infof("Server started at PORT %s and server name is %s", config.AppConfig.Port, config.AppConfig.Name)
-	err = http.ListenAndServe(config.AppConfig.Port, nil)
+	err := http.ListenAndServe(config.AppConfig.Port, nil)
 	if err != nil {
 		panic("HTTP SERVER DID NOT START")
 	}

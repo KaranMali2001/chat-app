@@ -21,7 +21,7 @@ func Init(isProduction bool) error {
 		}
 		if err == nil {
 			SugaredLogger = Logger.Sugar().WithOptions(zap.AddCallerSkip(1))
-			Logger.WithOptions(zap.AddCallerSkip(1))
+			Logger.WithOptions(zap.AddCallerSkip(2))
 			zap.ReplaceGlobals(Logger)
 		}
 	})

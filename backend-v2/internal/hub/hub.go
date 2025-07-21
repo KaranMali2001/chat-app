@@ -1,14 +1,39 @@
 package hub
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/chat-app/pkg/logger"
+	"github.com/redis/go-redis/v9"
 )
 
 type Hub struct {
-	Mu       sync.RWMutex
-	Rooms    map[string]*Room
-	Handlers map[string]EventHandler
+	Mu          sync.RWMutex
+	Rooms       map[string]*Room
+	Handlers    map[string]EventHandler
+	redisClient *redis.Client
+	serverName  string
+	pubsub      *redis.PubSub
+	ctx         context.Context
+	cancel      context.CancelFunc
+}
+
+func NewHub(redisClient *redis.Client, serverName string) *Hub {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &Hub{
+		Rooms:       make(map[string]*Room),
+		Handlers:    make(map[string]EventHandler),
+		redisClient: redisClient,
+		serverName:  serverName,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	h.RegisterDefaultHandlers()
+	h.startRedisSubscriber()
+	return h
 }
 
 func (h *Hub) RegisterHandlers(event_type string, handler EventHandler) {
@@ -17,7 +42,7 @@ func (h *Hub) RegisterHandlers(event_type string, handler EventHandler) {
 func (h *Hub) ProcessEvent(event Event, client *Client) error {
 	handler, exist := h.Handlers[event.Type]
 	if !exist {
-		return fmt.Errorf("handler not found")
+		return fmt.Errorf("handler not found for event Type %s", event.Type)
 	}
 	return handler(event, client)
 }
@@ -28,6 +53,27 @@ func (h *Hub) RegisterDefaultHandlers() {
 	h.RegisterHandlers(LEAVE_ROOM, h.HandleLeaveRoom)
 	h.RegisterHandlers(JOIN_ROOM, h.HandleJoinRoom)
 
+}
+
+func (h *Hub) publishToRedis(eventType string, payload Message, roomId string) {
+	redisMessage := RedisMessage{
+		Event: Event{
+			Type:    eventType,
+			Payload: payload,
+		},
+		RoomId:   roomId,
+		ServerId: h.serverName,
+	}
+	data, err := json.Marshal(redisMessage)
+	if err != nil {
+		logger.Errorln("Error while marshing the data", err)
+		return
+	}
+	ch := fmt.Sprintf("chat:room:%s", roomId)
+	if err := h.redisClient.Publish(h.ctx, ch, data).Err(); err != nil {
+		logger.Errorln("Failed to publish To redis", err)
+		return
+	}
 }
 func (h *Hub) HandleCreateRoom(event Event, client *Client) error {
 	roomId := event.Payload.RoomId
@@ -42,31 +88,104 @@ func (h *Hub) HandleCreateRoom(event Event, client *Client) error {
 	newRoom := createRoom(roomId)
 
 	h.Rooms[roomId] = newRoom
+	h.publishToRedis(CREATE_ROOM, event.Payload, roomId)
+	logger.Infof("Room is created")
+
 	return nil
 }
-
 func (h *Hub) HandleSendMessage(event Event, client *Client) error {
+	roomId := event.Payload.RoomId
+	if roomId == "" {
+		return fmt.Errorf("Room ID is missing")
+	}
+	h.Mu.RLock()
+	room, exist := h.Rooms[roomId]
+	h.Mu.RUnlock()
+	if !exist {
+		return fmt.Errorf("Room Does not Exist with roomID %s", roomId)
+	}
+	message := NewMessage(client.Username, event.Payload.Content, roomId)
+
+	h.publishToRedis(MESSAGE_RECEVIED, message, room.RoomId)
 	return nil
 }
 func (h *Hub) HandleLeaveRoom(event Event, client *Client) error {
+	roomID := event.Payload.RoomId
+	if roomID == "" {
+		return fmt.Errorf("missing room ID")
+	}
+	h.Mu.RLock()
+	if _, exist := h.Rooms[roomID]; !exist {
+		return fmt.Errorf("room does not exist")
+	}
+	h.Mu.RUnlock()
+	room := h.Rooms[roomID]
+	if err := room.removeClient(client); err != nil {
+		logger.Errorln("Error while removing the client from Room", err)
+		return err
+	}
+	leaveMsg := NewMessage("System", fmt.Sprintf("%s has left the Room", client.Username), roomID)
+	h.publishToRedis(USER_LEFT, leaveMsg, roomID)
+	logger.Infof("User %s Has Left the Room", client.Username)
 	return nil
 }
 func (h *Hub) HandleJoinRoom(event Event, client *Client) error {
-	h.Mu.RLock()
 	roomId := event.Payload.RoomId
+	if roomId == "" {
+		return fmt.Errorf("Room ID is empty")
+	}
+	h.Mu.RLock()
 	if _, exist := h.Rooms[roomId]; !exist {
 		return fmt.Errorf("room does not exist")
 	}
+	h.Mu.RUnlock()
 	room := h.Rooms[roomId]
 	room.addClients(client)
+	joinMessage := NewMessage("System", fmt.Sprintf("%s joined the room", client.Username), roomId)
+	h.publishToRedis(USER_JOINED, joinMessage, roomId)
+	logger.Infof("User ", client.Username, " has joined the room and message is published to redis")
 	return nil
 }
-func NewHub() *Hub {
+func (h *Hub) startRedisSubscriber() {
+	go func() {
+		pattern := "chat:room:*"
+		h.pubsub = h.redisClient.PSubscribe(h.ctx, pattern)
+		defer func() {
+			h.pubsub.Close()
+			logger.Infof("Redis subscriber stopped")
+		}()
 
-	h := &Hub{
-		Rooms:    make(map[string]*Room),
-		Handlers: make(map[string]EventHandler),
+		logger.Infof("Redis Subscriber started")
+		ch := h.pubsub.Channel()
+		for {
+			select {
+			case <-h.ctx.Done():
+				logger.Info("Context Done Called in Redis Sub")
+				return
+			case msg := <-ch:
+				h.handleRedisMessage(msg)
+			}
+		}
+	}()
+}
+func (h *Hub) handleRedisMessage(msg *redis.Message) {
+	var redisMessage RedisMessage
+	if err := json.Unmarshal([]byte(msg.Payload), &redisMessage); err != nil {
+		logger.Errorln("Failed to UnMarshal Redis Message", err)
+		return
 	}
-	h.RegisterDefaultHandlers()
-	return h
+	if redisMessage.ServerId == h.serverName {
+		logger.Info("Message From Same server so returining ...")
+		return
+
+	}
+	h.Mu.RLock()
+	room, exist := h.Rooms[redisMessage.RoomId]
+	h.Mu.RUnlock()
+	if !exist {
+		logger.Warn("The Room Does not Exist on Redis returning...")
+		return
+	}
+	room.Broadcast(redisMessage.Event, nil)
+
 }

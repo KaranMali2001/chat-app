@@ -40,7 +40,7 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Cant upgrade websocket connection"))
 		return
 	}
-	client := hub.NewClient(username, conn)
+	client := hub.NewClient(username, conn, chathub)
 	event := hub.Event{
 		Type: hub.JOIN_ROOM,
 		Payload: hub.Message{

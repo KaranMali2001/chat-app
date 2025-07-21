@@ -44,3 +44,11 @@ func CreateRoom(w http.ResponseWriter, r *http.Request) {
 	}, nil, w)
 
 }
+func GetRoomStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stats := chathub.GetRoomStats()
+	internal.SendJson(true, stats, nil, w)
+}

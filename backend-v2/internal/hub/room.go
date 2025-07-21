@@ -14,7 +14,7 @@ type Room struct {
 func createRoom(roomId string) *Room {
 	return &Room{
 		RoomId:  roomId,
-		Clients: map[string]*Client{},
+		Clients: make(map[string]*Client),
 	}
 }
 func (r *Room) addClients(client *Client) error {
@@ -27,4 +27,48 @@ func (r *Room) addClients(client *Client) error {
 
 	r.Clients[client.Username] = client
 	return nil
+}
+func (r *Room) removeClient(c *Client) error {
+	r.Mutex.Lock()
+	defer r.Mutex.Unlock()
+	if _, exist := r.Clients[c.Username]; !exist {
+		return fmt.Errorf("Client %s Not Found in Room %s", c.Username, r.RoomId)
+	}
+	delete(r.Clients, c.Username)
+	return nil
+}
+func (r *Room) Broadcast(event Event, exclude *Client) {
+	r.Mutex.RLock()
+	clients := make([]*Client, len(r.Clients))
+	for _, c := range r.Clients {
+		if exclude.Username != c.Username {
+			clients = append(clients, c)
+		}
+	}
+	r.Mutex.RUnlock()
+	for _, c := range clients {
+
+		c.SendEvent(event)
+	}
+}
+func (r *Room) getClientCount() int {
+	r.Mutex.RLock()
+	defer r.Mutex.RUnlock()
+	return len(r.Clients)
+}
+func (h *Hub) GetRoomStats() map[string]interface{} {
+	h.Mu.RLock()
+	defer h.Mu.RUnlock()
+
+	stats := make(map[string]interface{})
+	stats["total_rooms"] = len(h.Rooms)
+	stats["server_id"] = h.serverName
+
+	roomStats := make(map[string]int)
+	for roomID, room := range h.Rooms {
+		roomStats[roomID] = room.getClientCount()
+	}
+	stats["room_clients"] = roomStats
+
+	return stats
 }
