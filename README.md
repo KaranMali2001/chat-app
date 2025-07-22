@@ -2,9 +2,9 @@
 
 A full-stack real-time chat application built with:
 
-* **Backend** – Go 1.24 · Gorilla WebSocket · uber-zap logging
+* **Backend** – Go 1.24 · Gorilla WebSocket · uber-zap logging · Redis · Prometheus metrics
 * **Frontend** – React 19 · TypeScript · Vite 6 · Tailwind CSS 4 · Radix-UI · Socket.IO client
-* **Dev tooling** – Bun / npm · ESLint 9 · Makefile · Air hot-reload for Go
+* **Dev tooling** – Docker Compose · Air hot-reload · Prometheus · Grafana
 
 ---
 
@@ -29,7 +29,11 @@ A full-stack real-time chat application built with:
 * Typed, fully hot-reloading front-end and back-end dev experience
 * Clean, minimal UI (Tailwind CSS + Radix-UI)
 * Structured logging with uber-zap
-* Makefile orchestration for single-command dev / prod builds
+* Docker Compose for development and production environments
+* Monitoring with Prometheus and Grafana
+* Redis for pub/sub and state management
+* Health check endpoints
+* Room-based chat functionality
 
 ---
 
@@ -70,90 +74,193 @@ The backend exposes `/ws`, handled by a **Manager** that maintains an in-memory 
 
 ## 4  Local Setup
 
+### Prerequisites
+- Docker and Docker Compose
+- Go 1.24+ (for local development without Docker)
+- Node.js 20+ or Bun (for frontend development)
+
+### Using Docker (Recommended)
+
 ```bash
-# Clone & enter the repo
-git clone https://github.com/<you>/chat-app.git
-cd chat-app
+# Clone the repository
+git clone https://github.com/KaranMali12/chat-app.git
+cd chat-app/backend-v2
 
-# Install Go deps
-cd backend && go mod download   # requires Go ≥ 1.24
-# (optional) install Air for live-reload
+# Copy and configure environment variables
+cp .env.example .env.dev
+# Edit .env.dev with your configuration
+
+# Start the development stack
+docker-compose -f dev.docker-compose.yml up --build
+```
+
+The application will be available at:
+- Chat App: http://localhost:8080
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (admin/admin)
+
+### Local Development (Without Docker)
+
+```bash
+# Install Go dependencies
+cd backend-v2
+go mod download
+
+# Install Air for live-reload
 go install github.com/air-verse/air@latest
-cd ..
 
-# Install JS deps (Node 20 or Bun)
-cd frontend && bun install      # or: npm install
-cd ..
+# Start the application
+air
+```
+
+For production deployment, use the production Docker setup:
+```bash
+cd backend-v2
+docker-compose -f prod.docker-compose.yml up --build -d
 ```
 
 ---
 
 ## 5  Environment Variables
 
-Create two `.env` files (they are git-ignored):
+### Development (.env.dev)
+```
+# Application
+APP_ENV=development
+PORT=:8080
+APP_NAME=chat-app
 
-### backend/.env
-```
-ALLOWED_ORIGINS=http://localhost:5173
-PORT=8080            # optional – defaults to 8080
+# Redis
+REDIS_ADDR=redis:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# CORS
+ALLOWED_ORIGINS=http://localhost:3000
+
+# Prometheus
+PROMETHEUS_ENABLED=true
 ```
 
-### frontend/.env
+### Production (.env.prod)
 ```
-VITE_WS_URL=ws://localhost:8080/ws
+# Application
+APP_ENV=production
+PORT=:8080
+APP_NAME=chat-app-prod
+
+# Redis
+REDIS_ADDR=redis:6379
+REDIS_PASSWORD=your_secure_password
+REDIS_DB=0
+
+# CORS - Update with your production domain
+ALLOWED_ORIGINS=https://yourdomain.com
+
+# Prometheus
+PROMETHEUS_ENABLED=true
 ```
 
 ---
 
 ## 6  Development Workflow
 
-The **Makefile** abstracts everything:
+### Using Docker (Recommended)
 
 ```bash
-# Start Go Air + Vite dev servers concurrently
-make dev
+# Start the development stack
+docker-compose -f dev.docker-compose.yml up --build
 ```
 
-* `air` watches and hot-reloads Go code on changes.
-* `vite` (port 5173) serves & HMRs the React app.
+This will start:
+- Go application with hot-reload (Air)
+- Redis instance
+- Prometheus for metrics
+- Grafana for visualization
+
+### Local Development
+
+```bash
+# Start the Go application with hot-reload
+air
+
+# In a separate terminal, start Redis
+docker run -p 6379:6379 redis
+```
+
+### Monitoring
+- **Prometheus**: http://localhost:9090
+  - Configured to scrape Go application metrics
+- **Grafana**: http://localhost:3000
+  - Default credentials: admin/admin
+  - Pre-configured with a dashboard for monitoring the chat application
+
+
 
 ---
 
-## 7  Production Build & Deploy
+## 8  Detailed Project Structure (Backend v2)
 
-```bash
-# Bundle React, then compile & run the Go binary
-make prod
-```
-
-1. `npm run build` creates `frontend/dist` (static assets).
-2. Go compiles `backend/main.go` into `chat-app` (port 8080).
-3. Serve `dist` via CDN / Nginx & proxy `/ws` to the Go service in production.
-
----
-
-## 8  Detailed Project Structure
+### Core Components
 
 | Path | Description |
 |------|-------------|
-| `backend/main.go` | Initializes zap logger, registers routes, starts `http.ListenAndServe`. |
-| `backend/routes/routes.go` | Binds `/ws` → `websocket.Manager.ServeWs`. |
-| `backend/websocket/manager.go` | Upgrader config (compression, CORS via `ALLOWED_ORIGINS`), add/remove clients. |
-| `backend/websocket/client.go` | Per-connection goroutines: `readMessage`, `writeMessage`, graceful close. |
-| `frontend/src/components` | `Home.tsx`, `Chat-room.tsx` and shared UI components. |
-| `frontend/src/lib` | Utility hooks / helpers (e.g., socket hook). |
-| `vite.config.ts` | Tailwind plugin & path alias config. |
+| `cmd/` | Application entry points |
+| `cmd/main.go` | Main application entry point |
+| `cmd/bootstrap.go` | Application initialization and dependency injection |
+| `internal/` | Private application code |
+| `internal/config/` | Configuration management |
+| `internal/handler/` | HTTP request handlers |
+| `internal/hub/` | WebSocket hub implementation |
+| `internal/metrics/` | Prometheus metrics |
+| `pkg/` | Reusable packages |
+| `pkg/logger/` | Logging utilities |
+| `pkg/redis/` | Redis client wrapper |
+
+### Infrastructure
+
+| Path | Description |
+|------|-------------|
+| `dev.Dockerfile` | Development Dockerfile with hot-reload |
+| `prod.Dockerfile` | Production-optimized Dockerfile |
+| `dev.docker-compose.yml` | Development environment with monitoring |
+| `prod.docker-compose.yml` | Production environment |
+| `prometheus.yml` | Prometheus configuration |
+| `.env.example` | Example environment variables |
+
+### API Endpoints
+- `GET /health` - Health check endpoint
+- `GET /metrics` - Prometheus metrics
+- `GET /ws` - WebSocket endpoint
+- `POST /api/v1/create-room` - Create a new chat room
+- `GET /api/v1/room-stats` - Get room statistics
 
 ---
 
-## 9  Makefile Targets
+## 9  Docker Compose Commands
 
-| Target | Purpose |
-|--------|---------|
-| `make dev` | Hot-reloading development mode (`air` + `vite`). |
-| `make prod` | Build React & run compiled Go binary locally. |
-| `make preview` | Serve built React app (static) on port 4173. |
-| `make install-air` | Installs Air globally for Go live-reload. |
+### Development
+
+| Command | Description |
+|---------|-------------|
+| `docker-compose -f dev.docker-compose.yml up --build` | Start development stack |
+| `docker-compose -f dev.docker-compose.yml down` | Stop development stack |
+| `docker-compose -f dev.docker-compose.yml logs -f` | View logs |
+
+### Production
+
+| Command | Description |
+|---------|-------------|
+| `docker-compose -f prod.docker-compose.yml up -d --build` | Deploy production stack |
+| `docker-compose -f prod.docker-compose.yml down` | Stop production stack |
+| `docker-compose -f prod.docker-compose.yml logs -f` | View logs |
+
+### Monitoring
+
+| Service | URL | Default Credentials |
+|---------|-----|---------------------|
+| Prometheus | http://localhost:9090 | None |
+| Grafana | http://localhost:3000 | admin/admin |
 
 ---
 
@@ -161,9 +268,12 @@ make prod
 
 | Symptom | Fix |
 |---------|-----|
-| `websocket: request origin not allowed` | Ensure `ALLOWED_ORIGINS` matches the frontend origin (`scheme://host:port`). |
-| Port clash on 8080 / 5173 | Export `PORT` (backend) or edit `vite.config.ts` server port. |
-| Go changes not reloaded | Verify `air` is installed and detects `backend/*.go`. |
+| `websocket: request origin not allowed` | Ensure `ALLOWED_ORIGINS` in `.env` matches the frontend origin. |
+| `connection refused` errors | Make sure Redis is running and the connection details in `.env` are correct. |
+| Port conflicts | Check if ports 8080, 3000, 9090 are already in use. |
+| Go changes not reloading | Ensure `air` is running and watching the correct directories. |
+| Prometheus targets down | Check if the application is running and the `metrics` endpoint is accessible. |
+| Grafana login issues | Default credentials are admin/admin. Reset with `docker-compose -f dev.docker-compose.yml exec grafana grafana-cli admin reset-admin-password newpassword` |
 
 
 ---
