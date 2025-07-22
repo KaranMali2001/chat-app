@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  go-app:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    container_name: go-app
+    env_file:
+      - .env.dev # or .env.prod for production
+    environment:
+      - APP_ENV=development
+    ports:
+      - '8080:8080'
+
+    volumes:
+      - .:/app
+      - air_tmp:/tmp/.air
+    networks:
+      - monitoring
+    expose:
+      - '8080'
+    depends_on:
+      - redis
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - '9090:9090'
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_LOG_LEVEL=warn # Reduces log verbosity
+
+  redis:
+    image: redis:latest
+    container_name: redis-chat # Keep the same name
+    ports:
+      - '6379:6379'
+    networks:
+      - monitoring
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+volumes:
+  grafana_data:
+  redis_data:
+  air_tmp:
+
+networks:
+  monitoring:
+    driver: bridge

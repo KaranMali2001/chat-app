@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/chat-app/internal/config"
@@ -14,15 +15,27 @@ import (
 	goRedis "github.com/redis/go-redis/v9"
 )
 
+var isProd bool
+
 func loadEnv() {
-	err := godotenv.Load()
+	appEnv := os.Getenv("APP_ENV")
+
+	var filename string
+	if appEnv == "production" {
+		filename = ".env.prod"
+	} else {
+		filename = ".env.dev"
+	}
+	fmt.Println("xyz", filename)
+	err := godotenv.Load(filename)
 	if err != nil {
+		fmt.Println("ERROr", err)
 		panic("ENV NOT LOADED")
 	}
 
 }
 func initLogger() {
-	isProd := os.Getenv("APP_ENV") == "production"
+	isProd = os.Getenv("APP_ENV") == "production"
 	if err := logger.Init(isProd); err != nil {
 		panic("Failed To initize the Logger")
 	}
@@ -40,10 +53,11 @@ func initMetrics() {
 func initRedis() *goRedis.Client {
 	redisConfig := config.LoadRedisConfig()
 	config.LoadServerConfig()
-	rds, err := redis.InitRedisCleint(redisConfig.Addr, redisConfig.Password)
+	rds, err := redis.InitRedisCleint(redisConfig.Host, redisConfig.User, redisConfig.Password, isProd)
 	if err != nil {
 		panic("Redis is not iniizlted")
 	}
+
 	if err := rds.Ping(context.Background()).Err(); err != nil {
 		panic("Not able to ping Redis")
 	}

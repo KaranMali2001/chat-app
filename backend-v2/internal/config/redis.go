@@ -3,14 +3,16 @@ package config
 import "os"
 
 type RedisConfig struct {
-	Addr     string
+	Host     string
+	User     string
 	Password string
 }
 
 // LoadRedisConfig returns Redis config for local/dev or prod environment
 func LoadRedisConfig() RedisConfig {
 	return RedisConfig{
-		Addr:     os.Getenv("REDIS_ADDR"),
+		Host:     os.Getenv("REDIS_HOST"),
+		User:     os.Getenv("REDIS_USER"),
 		Password: os.Getenv("REDIS_PASSWORD"),
 	}
 }
