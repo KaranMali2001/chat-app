@@ -26,5 +26,4 @@ func SendJson(success bool, message map[string]interface{}, err error, w http.Re
 		logger.Errorln("errror while sending json message", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
-
 }
