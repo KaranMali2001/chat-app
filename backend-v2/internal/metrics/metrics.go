@@ -8,6 +8,10 @@ import (
 
 var (
 	once             sync.Once
+	TotalActiveRooms = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "total_active_rooms",
+		Help: "Number of total Active Rooms",
+	})
 	ActiveConnection = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "chat_active_connections",
 		Help: "Number of active websocket connections",
@@ -58,6 +62,7 @@ func Init() {
 				MessageLatency,
 				wsDeliverylatency,
 				httpDuration,
+				TotalActiveRooms,
 			)
 		})
 }

@@ -10,6 +10,12 @@ type responseRecorder struct {
 	statusCode int
 }
 
+func IncrementTotalActiveRoom() {
+	TotalActiveRooms.Inc()
+}
+func DecrementTotalActiveRoom() {
+	TotalActiveRooms.Dec()
+}
 func IncrementActiveConnections() {
 	ActiveConnection.Inc()
 }

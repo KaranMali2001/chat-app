@@ -29,7 +29,7 @@ type Client struct {
 	Hub       *Hub
 	closed    bool
 	mu        sync.RWMutex
-	ctx       context.Context
+	Ctx       context.Context
 	cancel    context.CancelFunc
 }
 
@@ -39,7 +39,7 @@ func NewClient(username string, conn *websocket.Conn, hub *Hub) *Client {
 		Username: username,
 		Egress:   make(chan Event, egressBuffer),
 		Conn:     conn,
-		ctx:      ctx,
+		Ctx:      ctx,
 		Hub:      hub,
 		cancel:   cancel,
 	}
@@ -57,7 +57,7 @@ func (c *Client) ReadMessage() {
 	})
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-c.Ctx.Done():
 			logger.Infof("Context Done called")
 			return
 		default:
@@ -101,7 +101,7 @@ func (c *Client) WriteMessage() {
 	}()
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-c.Ctx.Done():
 			logger.Info("Context Done called in Write Go routine")
 
 		case event, ok := <-c.Egress:

@@ -49,24 +49,31 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 			Time:   time.Now().String(),
 		},
 	}
-	chathub.ProcessEvent(event, client)
+	if err := chathub.ProcessEvent(event, client); err != nil {
+		logger.Errorln("Error while joining room:", err)
+		return
+	}
+	go client.ReadMessage()
+	go client.WriteMessage()
 	metrics.IncrementActiveConnections()
+	<-client.Ctx.Done()
 	defer metrics.DecreamentActiveConnections()
 	defer conn.Close()
-	for {
-		msgType, msg, err := conn.ReadMessage()
-		if err != nil {
-			logger.Errorln("error while reading the message ", err)
-
-			break
-
-		}
-		logger.Infof("Message recevived %s", msg)
-		if err := conn.WriteMessage(msgType, msg); err != nil {
-			logger.Errorln("error while Writing back to client", err)
-		}
-		metrics.RecordMessageSent()
+	// Handle leave room event when client disconnects
+	leaveEvent := hub.Event{
+		Type: hub.LEAVE_ROOM,
+		Payload: hub.Message{
+			RoomId: roomId,
+			Sender: username,
+			Time:   time.Now().String(),
+		},
 	}
+
+	if err := chathub.ProcessEvent(leaveEvent, client); err != nil {
+		logger.Errorln("Error while leaving room:", err)
+	}
+
+	logger.Infof("Client %s disconnected from room %s", username, roomId)
 }
 func checkOrigin(r *http.Request) bool {
 

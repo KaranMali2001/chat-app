@@ -6,6 +6,7 @@ import (
 
 	"github.com/chat-app/internal"
 	"github.com/chat-app/internal/hub"
+	"github.com/chat-app/internal/metrics"
 
 	"github.com/chat-app/pkg/logger"
 )
@@ -37,7 +38,7 @@ func CreateRoom(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create the room", http.StatusInternalServerError)
 		return
 	}
-
+	metrics.IncrementTotalActiveRoom()
 	internal.SendJson(true, map[string]interface{}{
 		"message": "Room created successfuly",
 		"data":    string(roomId),
