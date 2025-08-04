@@ -12,6 +12,8 @@ import (
 	"github.com/chat-app/pkg/logger"
 	"github.com/chat-app/pkg/redis"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+
 	goRedis "github.com/redis/go-redis/v9"
 )
 
@@ -47,7 +49,11 @@ func initConfig() {
 }
 
 func initMetrics() {
-	metrics.Init()
+	reg := prometheus.WrapRegistererWith(
+		prometheus.Labels{"server_name": config.AppConfig.Name},
+		prometheus.DefaultRegisterer,
+	)
+	metrics.Init(reg)
 	logger.Infof("Metrics initialized successfully")
 }
 func initRedis() *goRedis.Client {

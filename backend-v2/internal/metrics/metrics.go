@@ -7,7 +7,8 @@ import (
 )
 
 var (
-	once             sync.Once
+	once sync.Once
+
 	TotalActiveRooms = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "total_active_rooms",
 		Help: "Number of total Active Rooms",
@@ -50,11 +51,11 @@ var (
 	)
 )
 
-func Init() {
+func Init(reg prometheus.Registerer) {
 	once.Do(
 		func() {
 
-			prometheus.MustRegister(
+			reg.MustRegister(
 				ActiveConnection,
 				TotalMessagesSent,
 				RedisPublisherError,

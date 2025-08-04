@@ -22,6 +22,7 @@ func main() {
 	initMetrics()
 	rds := initRedis()
 	initHub(rds)
+
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/health", handler.HealthHandler)
 	http.HandleFunc("/ws", handler.WebSocketUpgrader)
