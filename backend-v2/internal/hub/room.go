@@ -38,10 +38,12 @@ func (r *Room) removeClient(c *Client) error {
 	return nil
 }
 func (r *Room) Broadcast(event Event, exclude *Client) {
+
 	r.Mutex.RLock()
-	clients := make([]*Client, len(r.Clients))
+	clients := make([]*Client, 0, len(r.Clients))
+
 	for _, c := range r.Clients {
-		if exclude.Username != c.Username {
+		if exclude != nil && exclude.Username != c.Username {
 			clients = append(clients, c)
 		}
 	}

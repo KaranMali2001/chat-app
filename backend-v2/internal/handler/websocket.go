@@ -49,10 +49,12 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 			Time:   time.Now().String(),
 		},
 	}
+	logger.Infof("New client is created %s and event for join room is %s", client.Username, event)
 	if err := chathub.ProcessEvent(event, client); err != nil {
 		logger.Errorln("Error while joining room:", err)
 		return
 	}
+	logger.Infof("AFTER PROCEESING THE EVENT")
 	go client.ReadMessage()
 	go client.WriteMessage()
 	metrics.IncrementActiveConnections()

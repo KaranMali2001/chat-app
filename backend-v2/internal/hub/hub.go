@@ -74,6 +74,7 @@ func (h *Hub) publishToRedis(eventType string, payload Message, roomId string) {
 		logger.Errorln("Failed to publish To redis", err)
 		return
 	}
+	logger.Infof("EVENT publish to redis successfully")
 }
 func (h *Hub) HandleCreateRoom(event Event, client *Client) error {
 	roomId := event.Payload.RoomId
@@ -140,8 +141,11 @@ func (h *Hub) HandleJoinRoom(event Event, client *Client) error {
 	}
 	h.Mu.RUnlock()
 	room := h.Rooms[roomId]
+	logger.Infof("room is %s", room.RoomId)
 	room.addClients(client)
 	joinMessage := NewMessage("System", fmt.Sprintf("%s joined the room", client.Username), roomId)
+	logger.Infof("total room clients %s", len(room.Clients))
+	logger.Infof("NEW MESSAGE %s", joinMessage)
 	h.publishToRedis(USER_JOINED, joinMessage, roomId)
 	logger.Infof("User ", client.Username, " has joined the room and message is published to redis")
 	return nil
@@ -160,7 +164,7 @@ func (h *Hub) startRedisSubscriber() {
 		for {
 			select {
 			case <-h.ctx.Done():
-				logger.Info("Context Done Called in Redis Sub")
+				logger.Infof("Context Done Called in Redis Sub")
 				return
 			case msg := <-ch:
 				h.handleRedisMessage(msg)
@@ -174,11 +178,11 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 		logger.Errorln("Failed to UnMarshal Redis Message", err)
 		return
 	}
-	if redisMessage.ServerId == h.serverName {
-		logger.Info("Message From Same server so returining ...")
-		return
+	// if redisMessage.ServerId == h.serverName {
+	// 	logger.Infof("Message From Same server so returining ...")
+	// 	return
 
-	}
+	// }
 	h.Mu.RLock()
 	room, exist := h.Rooms[redisMessage.RoomId]
 	h.Mu.RUnlock()

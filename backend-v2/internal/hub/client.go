@@ -102,7 +102,7 @@ func (c *Client) WriteMessage() {
 	for {
 		select {
 		case <-c.Ctx.Done():
-			logger.Info("Context Done called in Write Go routine")
+			logger.Infof("Context Done called in Write Go routine")
 
 		case event, ok := <-c.Egress:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
