@@ -178,18 +178,18 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 		logger.Errorln("Failed to UnMarshal Redis Message", err)
 		return
 	}
-	// if redisMessage.ServerId == h.serverName {
-	// 	logger.Infof("Message From Same server so returining ...")
-	// 	return
 
-	// }
+	logger.Infof("Received Redis message for room %s", redisMessage.RoomId)
+
 	h.Mu.RLock()
 	room, exist := h.Rooms[redisMessage.RoomId]
 	h.Mu.RUnlock()
+
 	if !exist {
 		logger.Warn("The Room Does not Exist on Redis returning...")
 		return
 	}
-	room.Broadcast(redisMessage.Event, nil)
 
+	logger.Infof("Broadcasting Redis message to room %s", redisMessage.RoomId)
+	room.Broadcast(redisMessage.Event, nil)
 }

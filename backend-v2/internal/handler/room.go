@@ -32,12 +32,14 @@ func CreateRoom(w http.ResponseWriter, r *http.Request) {
 			RoomId: string(roomId),
 		},
 	}
+	logger.Info("After event")
 	if err := chathub.ProcessEvent(event, &hub.Client{}); err != nil {
 
 		logger.Errorln("Error while creating Room", err)
 		http.Error(w, "failed to create the room", http.StatusInternalServerError)
 		return
 	}
+
 	metrics.IncrementTotalActiveRoom()
 	internal.SendJson(true, map[string]interface{}{
 		"message": "Room created successfuly",

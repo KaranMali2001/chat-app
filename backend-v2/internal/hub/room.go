@@ -2,6 +2,7 @@ package hub
 
 import (
 	"fmt"
+	"github.com/chat-app/pkg/logger"
 	"sync"
 )
 
@@ -38,18 +39,20 @@ func (r *Room) removeClient(c *Client) error {
 	return nil
 }
 func (r *Room) Broadcast(event Event, exclude *Client) {
-
 	r.Mutex.RLock()
+	logger.Infof("Broadcasting to room with %d clients", len(r.Clients))
 	clients := make([]*Client, 0, len(r.Clients))
 
 	for _, c := range r.Clients {
-		if exclude != nil && exclude.Username != c.Username {
+		if exclude == nil || exclude.Username != c.Username {
 			clients = append(clients, c)
+			logger.Infof("Adding client %s to broadcast list", c.Username)
 		}
 	}
 	r.Mutex.RUnlock()
-	for _, c := range clients {
 
+	logger.Infof("Broadcasting event to %d clients", len(clients))
+	for _, c := range clients {
 		c.SendEvent(event)
 	}
 }
