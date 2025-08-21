@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/chat-app/pkg/logger"
 	"github.com/redis/go-redis/v9"
@@ -81,20 +82,46 @@ func (h *Hub) HandleCreateRoom(event Event, client *Client) error {
 	if roomId == "" {
 		return fmt.Errorf("missing room id")
 	}
+
+	// Check if room exists in Redis first (for distributed environment)
+	roomKey := fmt.Sprintf("chat:room:%s", roomId)
+	exists, err := h.redisClient.Exists(h.ctx, roomKey).Result()
+	if err != nil {
+		logger.Errorln("Error checking room existence in Redis", err)
+		return fmt.Errorf("failed to check room existence")
+	}
+
+	if exists > 0 {
+		return fmt.Errorf("room already exists, try to join the room")
+	}
+
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
-	if _, exist := h.Rooms[roomId]; exist {
-		return fmt.Errorf("room already exist ,try to join the room")
-	}
-	newRoom := createRoom(roomId)
 
+	// Create room locally
+	newRoom := createRoom(roomId)
 	h.Rooms[roomId] = newRoom
-	err := h.redisClient.HSet(h.ctx, roomId)
-	if err != nil {
-		logger.Errorln("Errro while creating room in redis", err)
+
+	// Store room in Redis for distributed access
+	roomData := map[string]interface{}{
+		"room_id":    roomId,
+		"created_by": client.Username,
+		"server_id":  h.serverName,
+		"created_at": fmt.Sprintf("%d", time.Now().Unix()),
 	}
+
+	if err := h.redisClient.HSet(h.ctx, roomKey, roomData).Err(); err != nil {
+		logger.Errorln("Error while creating room in Redis", err)
+		// Remove from local storage if Redis fails
+		delete(h.Rooms, roomId)
+		return fmt.Errorf("failed to create room in Redis")
+	}
+
+	// Set room expiration (optional: 24 hours)
+	h.redisClient.Expire(h.ctx, roomKey, 24*time.Hour)
+
 	h.publishToRedis(CREATE_ROOM, event.Payload, roomId)
-	logger.Infof("Room is created")
+	logger.Infof("Room %s created successfully", roomId)
 
 	return nil
 }
@@ -111,6 +138,14 @@ func (h *Hub) HandleSendMessage(event Event, client *Client) error {
 	}
 	message := NewMessage(client.Username, event.Payload.Content, roomId)
 
+	// Broadcast locally first
+	broadcastEvent := Event{
+		Type:    MESSAGE_RECEVIED,
+		Payload: message,
+	}
+	room.Broadcast(broadcastEvent, nil)
+
+	// Then publish to Redis for other servers
 	h.publishToRedis(MESSAGE_RECEVIED, message, room.RoomId)
 	return nil
 }
@@ -119,49 +154,117 @@ func (h *Hub) HandleLeaveRoom(event Event, client *Client) error {
 	if roomID == "" {
 		return fmt.Errorf("missing room ID")
 	}
-	h.Mu.RLock()
-	if _, exist := h.Rooms[roomID]; !exist {
+
+	h.Mu.Lock()
+	defer h.Mu.Unlock()
+
+	room, exists := h.Rooms[roomID]
+	if !exists {
 		return fmt.Errorf("room does not exist")
 	}
-	h.Mu.RUnlock()
-	room := h.Rooms[roomID]
+
 	if err := room.removeClient(client); err != nil {
-		logger.Errorln("Error while removing the client from Room", err)
+		logger.Errorln("Error while removing client from room", err)
 		return err
 	}
-	leaveMsg := NewMessage("System", fmt.Sprintf("%s has left the Room", client.Username), roomID)
+
+	// Update Redis with current client count
+	clientCountKey := fmt.Sprintf("chat:room:%s:clients:%s", roomID, h.serverName)
+	h.redisClient.Set(h.ctx, clientCountKey, len(room.Clients), time.Hour)
+
+	// If room is empty, optionally clean it up
+	if len(room.Clients) == 0 {
+		logger.Infof("Room %s is empty, cleaning up locally", roomID)
+		delete(h.Rooms, roomID)
+		// Remove client count from Redis
+		h.redisClient.Del(h.ctx, clientCountKey)
+	}
+
+	leaveMsg := NewMessage("System", fmt.Sprintf("%s has left the room", client.Username), roomID)
 	h.publishToRedis(USER_LEFT, leaveMsg, roomID)
-	logger.Infof("User %s Has Left the Room", client.Username)
+	logger.Infof("User %s has left room %s", client.Username, roomID)
 	return nil
 }
 func (h *Hub) HandleJoinRoom(event Event, client *Client) error {
 	roomId := event.Payload.RoomId
-	var room *Room
 	if roomId == "" {
 		return fmt.Errorf("Room ID is empty")
 	}
-	h.Mu.RLock()
-	if _, exist := h.Rooms[roomId]; !exist {
-		//if not found then find it redis
-		room, err := h.redisClient.HGetAll(h.ctx, fmt.Sprintf("chat:room:%s", roomId)).Result()
-		logger.Infof("rooms in redis are", room)
-		if err != nil {
-			logger.Errorln("Error while getting the room from redis", err)
-			return fmt.Errorf("room does not exist")
+
+	// Store room ID in client for reconnection
+	client.mu.Lock()
+	client.roomID = roomId
+	client.mu.Unlock()
+
+	h.Mu.Lock()
+	defer h.Mu.Unlock()
+
+	// Check if room exists locally
+	room, exists := h.Rooms[roomId]
+	if !exists {
+		// Try to load room from Redis
+		roomKey := fmt.Sprintf("chat:room:%s", roomId)
+		roomData, err := h.redisClient.HGetAll(h.ctx, roomKey).Result()
+		if err != nil && err != redis.Nil {
+			logger.Errorln("Error getting room from Redis: %v", err)
+			return fmt.Errorf("failed to check room existence")
 		}
-		return fmt.Errorf("room does not exist")
+
+		if len(roomData) == 0 {
+			// Room doesn't exist, create it
+			room = &Room{
+				RoomId:  roomId,
+				Clients: make(map[string]*Client),
+			}
+			h.Rooms[roomId] = room
+			
+			// Save room to Redis
+			roomJSON, err := json.Marshal(map[string]interface{}{
+				"id":      roomId,
+				"created": time.Now().Unix(),
+			})
+			if err != nil {
+				logger.Errorln("Error marshaling room data: %v", err)
+				return fmt.Errorf("failed to create room")
+			}
+			
+			if err := h.redisClient.HSet(h.ctx, roomKey, roomJSON).Err(); err != nil {
+				logger.Errorln("Error saving room to Redis: %v", err)
+				// Continue even if Redis save fails, as we have it in memory
+			}
+			
+			logger.Infof("Created new room: %s", roomId)
+		} else {
+			// Room exists in Redis but not locally, create it
+			room = &Room{
+				RoomId:  roomId,
+				Clients: make(map[string]*Client),
+			}
+			h.Rooms[roomId] = room
+			logger.Infof("Loaded room from Redis: %s", roomId)
+		}
 	}
-	h.Mu.RUnlock()
-	room = h.Rooms[roomId]
-	logger.Infof("room is %s", room.RoomId)
-	room.addClients(client)
+
+	// Add client to room
+	if err := room.addClients(client); err != nil {
+		logger.	Errorln("Error adding client to room: %v", err)
+		return fmt.Errorf("failed to join room")
+	}
+
 	joinMessage := NewMessage(client.Username, fmt.Sprintf("%s joined the room", client.Username), roomId)
-	logger.Infof("total room clients %s", len(room.Clients))
-	logger.Infof("NEW MESSAGE %s", joinMessage)
+	logger.Infof("Total room clients: %d", len(room.Clients))
+
+	// Update Redis with current server's client count
+	clientCountKey := fmt.Sprintf("chat:room:%s:clients:%s", roomId, h.serverName)
+	if err := h.redisClient.Set(h.ctx, clientCountKey, len(room.Clients), time.Hour).Err(); err != nil {
+		logger.Errorln("Error updating client count in Redis: %v", err)
+	}
+
 	h.publishToRedis(USER_JOINED, joinMessage, roomId)
-	logger.Infof("User ", client.Username, " has joined the room and message is published to redis")
+	logger.Infof("User %s has joined room %s", client.Username, roomId)
 	return nil
 }
+
 func (h *Hub) startRedisSubscriber() {
 	go func() {
 		pattern := "chat:room:*"
@@ -191,17 +294,40 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 		return
 	}
 
-	logger.Infof("Received Redis message for room %s", redisMessage.RoomId)
+	logger.Infof("Received Redis message for room %s from server %s", redisMessage.RoomId, redisMessage.ServerId)
 
 	h.Mu.RLock()
 	room, exist := h.Rooms[redisMessage.RoomId]
 	h.Mu.RUnlock()
 
 	if !exist {
-		logger.Warn("The Room Does not Exist on Redis returning...")
+		logger.Infof("Room %s does not exist locally, skipping broadcast", redisMessage.RoomId)
 		return
 	}
 
-	logger.Infof("Broadcasting Redis message to room %s", redisMessage.RoomId)
+	logger.Infof("Broadcasting Redis message to room %s with %d clients", redisMessage.RoomId, len(room.Clients))
 	room.Broadcast(redisMessage.Event, nil)
+}
+
+// Cleanup method to be called on server shutdown
+func (h *Hub) Cleanup() {
+	logger.Infof("Starting hub cleanup...")
+
+	h.cancel() // Cancel context to stop Redis subscriber
+
+	h.Mu.Lock()
+	defer h.Mu.Unlock()
+
+	// Clean up client counts for all rooms on this server
+	for roomId := range h.Rooms {
+		clientCountKey := fmt.Sprintf("chat:room:%s:clients:%s", roomId, h.serverName)
+		h.redisClient.Del(h.ctx, clientCountKey)
+	}
+
+	// Close pubsub connection
+	if h.pubsub != nil {
+		h.pubsub.Close()
+	}
+
+	logger.Infof("Hub cleanup completed")
 }

@@ -52,9 +52,15 @@ func (r *Room) Broadcast(event Event, exclude *Client) {
 	r.Mutex.RUnlock()
 
 	logger.Infof("Broadcasting event to %d clients", len(clients))
+	successCount := 0
 	for _, c := range clients {
-		c.SendEvent(event)
+		if c.SendEvent(event) {
+			successCount++
+		} else {
+			logger.Logger.Sugar().Warnf("Failed to send event to client %s", c.Username)
+		}
 	}
+	logger.Infof("Successfully broadcasted to %d/%d clients", successCount, len(clients))
 }
 func (r *Room) getClientCount() int {
 	r.Mutex.RLock()

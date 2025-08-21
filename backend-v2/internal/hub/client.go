@@ -19,18 +19,22 @@ const (
 	pingPeriod     = (pongWait * 9) / 10
 	maxMessageSize = 512
 	egressBuffer   = 256
+	maxReconnectAttempts = 3
+	reconnectDelay       = 2 * time.Second
 )
 
 type Client struct {
-	Username  string          `json:"username,omitempty"`
-	Egress    chan Event      `json:"egress,omitempty"`
-	CloseOnce sync.Once       `json:"close_once,omitempty"`
-	Conn      *websocket.Conn `json:"conn,omitempty"`
-	Hub       *Hub
-	closed    bool
-	mu        sync.RWMutex
-	Ctx       context.Context
-	cancel    context.CancelFunc
+	Username    string          `json:"username,omitempty"`
+	Egress      chan Event      `json:"egress,omitempty"`
+	CloseOnce   sync.Once       `json:"close_once,omitempty"`
+	Conn        *websocket.Conn `json:"conn,omitempty"`
+	Hub         *Hub
+	closed      bool
+	mu          sync.RWMutex
+	Ctx         context.Context
+	cancel      context.CancelFunc
+	reconnect   chan struct{}
+	roomID      string
 }
 
 func NewClient(username string, conn *websocket.Conn, hub *Hub) *Client {
@@ -44,6 +48,61 @@ func NewClient(username string, conn *websocket.Conn, hub *Hub) *Client {
 		cancel:   cancel,
 	}
 }
+
+func (c *Client) ensureConnection() error {
+	c.mu.RLock()
+	if c.Conn != nil {
+		c.mu.RUnlock()
+		return nil
+	}
+	c.mu.RUnlock()
+
+	// Attempt to reconnect
+	return c.reconnectWithRetry()
+}
+
+func (c *Client) reconnectWithRetry() error {
+	var lastErr error
+	
+	for i := 0; i < maxReconnectAttempts; i++ {
+		if i > 0 {
+			time.Sleep(reconnectDelay)
+		}
+		
+		// Create new connection
+		conn, _, err := websocket.DefaultDialer.Dial(c.Conn.RemoteAddr().String(), nil)
+		if err != nil {
+			lastErr = err
+			logger.Errorln("Reconnection attempt %d failed: %v", i+1, err)
+			continue
+		}
+		
+		c.mu.Lock()
+		c.Conn = conn
+		c.closed = false
+		c.mu.Unlock()
+		
+		// Rejoin room if needed
+		if c.roomID != "" {
+			joinEvent := Event{
+				Type: JOIN_ROOM,
+				Payload: Message{
+					RoomId: c.roomID,
+					Sender: c.Username,
+				},
+			}
+			if err := c.Hub.ProcessEvent(joinEvent, c); err != nil {
+				logger.Errorln("Failed to rejoin room: %v", err)
+				continue
+			}
+		}
+		
+		return nil
+	}
+	
+	return fmt.Errorf("failed to reconnect after %d attempts: %v", maxReconnectAttempts, lastErr)
+}
+
 func (c *Client) ReadMessage() {
 	defer func() {
 		c.Close()
@@ -92,37 +151,67 @@ func (c *Client) ReadMessage() {
 		}
 	}
 }
+
 func (c *Client) WriteMessage() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
 		c.Close()
-		logger.Infof("Write Go routine is terminated for client", c.Username)
+		logger.Infof("Write Go routine is terminated for client %s", c.Username)
 	}()
+	
 	for {
 		select {
 		case <-c.Ctx.Done():
 			logger.Infof("Context Done called in Write Go routine")
+			return
 
 		case event, ok := <-c.Egress:
-			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := c.Conn.WriteJSON(event); err != nil {
-				logger.Errorln("Error while sending Message to Client", c.Username, err)
+			
+			// Ensure we have a valid connection
+			if err := c.ensureConnection(); err != nil {
+				logger.Errorln("Cannot send message, connection lost: %v", err)
+				return
 			}
+			
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.Conn.WriteJSON(event); err != nil {
+				logger.Errorln("Error writing message to client %s: %v", c.Username, err)
+				// Attempt to reconnect on write error
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					if reconnectErr := c.reconnectWithRetry(); reconnectErr == nil {
+						// Retry sending the message after reconnection
+						select {
+						case c.Egress <- event:
+							continue
+						default:
+							logger.Infof("Dropping message for %s: egress channel full", c.Username)
+						}
+					}
+				}
+				return
+			}
+			
 		case <-ticker.C:
+			if err := c.ensureConnection(); err != nil {
+				logger.Errorln("Cannot send ping, connection lost: %v", err)
+				return
+			}
+			
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				logger.Errorln("Error while sending Ping to client ", c.Username, err)
+				logger.Errorln("Error sending ping to client %s: %v", c.Username, err)
 				return
 			}
 		}
 	}
 
 }
+
 func (c *Client) Close() {
 	c.CloseOnce.Do(func() {
 		c.mu.Lock()
@@ -136,9 +225,11 @@ func (c *Client) Close() {
 		logger.Infof("Client %s closed", c.Username)
 	})
 }
+
 func (c *Client) SendEvent(event Event) bool {
 	c.mu.RLock()
 	closed := c.closed
+	c.mu.RUnlock()
 	if closed {
 		logger.Infof("Client Egress channel is closed", closed)
 		return false

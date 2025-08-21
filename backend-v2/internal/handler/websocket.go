@@ -2,10 +2,9 @@ package handler
 
 import (
 	"net/http"
-	"slices"
+
 	"time"
 
-	"github.com/chat-app/internal/config"
 	"github.com/chat-app/internal/hub"
 	"github.com/chat-app/internal/metrics"
 	"github.com/chat-app/pkg/logger"
@@ -55,31 +54,36 @@ func WebSocketUpgrader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logger.Infof("AFTER PROCEESING THE EVENT")
+	defer func() {
+		metrics.DecreamentActiveConnections()
+		// Handle leave room event when client disconnects
+		leaveEvent := hub.Event{
+			Type: hub.LEAVE_ROOM,
+			Payload: hub.Message{
+				RoomId: roomId,
+				Sender: username,
+				Time:   time.Now().String(),
+			},
+		}
+
+		if err := chathub.ProcessEvent(leaveEvent, client); err != nil {
+			logger.Errorln("Error while leaving room:", err)
+		}
+
+		logger.Infof("Client %s disconnected from room %s", username, roomId)
+		client.Close()
+	}()
+	
 	go client.ReadMessage()
 	go client.WriteMessage()
 	metrics.IncrementActiveConnections()
 	<-client.Ctx.Done()
-	defer metrics.DecreamentActiveConnections()
-	defer conn.Close()
-	// Handle leave room event when client disconnects
-	leaveEvent := hub.Event{
-		Type: hub.LEAVE_ROOM,
-		Payload: hub.Message{
-			RoomId: roomId,
-			Sender: username,
-			Time:   time.Now().String(),
-		},
-	}
-
-	if err := chathub.ProcessEvent(leaveEvent, client); err != nil {
-		logger.Errorln("Error while leaving room:", err)
-	}
-
-	logger.Infof("Client %s disconnected from room %s", username, roomId)
 }
 func checkOrigin(r *http.Request) bool {
 
-	origin := r.Header.Get("Origin")
+	// origin := r.Header.Get("Origin")
 
-	return origin != "" && slices.Contains(config.AppConfig.AllowedOrigins, (origin))
+	// return origin != "" && slices.Contains(config.AppConfig.AllowedOrigins, (origin))
+
+	return true
 }
