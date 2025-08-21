@@ -89,6 +89,10 @@ func (h *Hub) HandleCreateRoom(event Event, client *Client) error {
 	newRoom := createRoom(roomId)
 
 	h.Rooms[roomId] = newRoom
+	err := h.redisClient.HSet(h.ctx, roomId)
+	if err != nil {
+		logger.Errorln("Errro while creating room in redis", err)
+	}
 	h.publishToRedis(CREATE_ROOM, event.Payload, roomId)
 	logger.Infof("Room is created")
 
@@ -132,18 +136,26 @@ func (h *Hub) HandleLeaveRoom(event Event, client *Client) error {
 }
 func (h *Hub) HandleJoinRoom(event Event, client *Client) error {
 	roomId := event.Payload.RoomId
+	var room *Room
 	if roomId == "" {
 		return fmt.Errorf("Room ID is empty")
 	}
 	h.Mu.RLock()
 	if _, exist := h.Rooms[roomId]; !exist {
+		//if not found then find it redis
+		room, err := h.redisClient.HGetAll(h.ctx, fmt.Sprintf("chat:room:%s", roomId)).Result()
+		logger.Infof("rooms in redis are", room)
+		if err != nil {
+			logger.Errorln("Error while getting the room from redis", err)
+			return fmt.Errorf("room does not exist")
+		}
 		return fmt.Errorf("room does not exist")
 	}
 	h.Mu.RUnlock()
-	room := h.Rooms[roomId]
+	room = h.Rooms[roomId]
 	logger.Infof("room is %s", room.RoomId)
 	room.addClients(client)
-	joinMessage := NewMessage("System", fmt.Sprintf("%s joined the room", client.Username), roomId)
+	joinMessage := NewMessage(client.Username, fmt.Sprintf("%s joined the room", client.Username), roomId)
 	logger.Infof("total room clients %s", len(room.Clients))
 	logger.Infof("NEW MESSAGE %s", joinMessage)
 	h.publishToRedis(USER_JOINED, joinMessage, roomId)
